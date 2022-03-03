@@ -129,6 +129,21 @@ void transport_receiver(unsigned char *buffer, size_t buffer_len) {
 			body = (sml_get_list_response *) message->message_body->data;
 			fprintf(output_fd, "{\n");
 			int first = true;
+
+			if(body->act_sensor_time != NULL) {
+				switch(*body->act_sensor_time->tag) {
+					case SML_TIME_SEC_INDEX:
+						fprintf(output_fd, "  \"act_sensor_time_sec_index\": %u", *body->act_sensor_time->data.sec_index);
+						first = false;
+					break;
+
+					case SML_TIME_TIMESTAMP:
+						fprintf(output_fd, "  \"act_sensor_time_timestamp\": %u", *body->act_sensor_time->data.timestamp);
+						first = false;
+					break;
+				}
+			}
+
 			for (entry = body->val_list; entry != NULL; entry = entry->next) {
 				if (!entry->value) { // do not crash on null value
 					fprintf(stderr, "Error in data stream. entry->value should not be NULL. Skipping this.\n");
