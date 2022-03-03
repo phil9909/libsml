@@ -41,7 +41,30 @@
 // globals
 int sflag = false; // flag to process only a single OBIS data stream
 int vflag = false; // verbose flag
+char *oflag = NULL; // output flag
+FILE *output_fd = NULL;
 
+void output_open() {
+	if (oflag == NULL) {
+		output_fd = stdout;
+		return;
+	}
+	output_fd = fopen(oflag, "a");
+	if (output_fd == NULL) {
+		fprintf(stderr, "error: open(%s): %s\n", oflag, strerror(errno));
+		exit(1);
+	}
+}
+
+void output_close() {
+	if (oflag == NULL) {
+		output_fd = NULL;
+		return;
+	}
+
+	fclose(output_fd);
+	output_fd = NULL;
+}
 
 int serial_port_open(const char* device) {
 	int bits;
@@ -104,21 +127,30 @@ void transport_receiver(unsigned char *buffer, size_t buffer_len) {
 			sml_list *entry;
 			sml_get_list_response *body;
 			body = (sml_get_list_response *) message->message_body->data;
+			fprintf(output_fd, "{\n");
+			int first = true;
 			for (entry = body->val_list; entry != NULL; entry = entry->next) {
 				if (!entry->value) { // do not crash on null value
 					fprintf(stderr, "Error in data stream. entry->value should not be NULL. Skipping this.\n");
 					continue;
 				}
+
+				if (first) {
+					first = false;
+				} else {
+					fprintf(output_fd, ",\n");
+				}
+
 				if (entry->value->type == SML_TYPE_OCTET_STRING) {
 					char *str;
-					printf("%d-%d:%d.%d.%d*%d#%s#\n",
+					fprintf(output_fd, "  \"%d-%d:%d.%d.%d*%d\": \"%s\"",
 						entry->obj_name->str[0], entry->obj_name->str[1],
 						entry->obj_name->str[2], entry->obj_name->str[3],
 						entry->obj_name->str[4], entry->obj_name->str[5],
 						sml_value_to_strhex(entry->value, &str, true));
 					free(str);
 				} else if (entry->value->type == SML_TYPE_BOOLEAN) {
-					printf("%d-%d:%d.%d.%d*%d#%s#\n",
+					fprintf(output_fd, "  \"%d-%d:%d.%d.%d*%d\": %s",
 						entry->obj_name->str[0], entry->obj_name->str[1],
 						entry->obj_name->str[2], entry->obj_name->str[3],
 						entry->obj_name->str[4], entry->obj_name->str[5],
@@ -131,19 +163,24 @@ void transport_receiver(unsigned char *buffer, size_t buffer_len) {
 					if (prec < 0)
 						prec = 0;
 					value = value * pow(10, scaler);
-					printf("%d-%d:%d.%d.%d*%d#%.*f#",
+					fprintf(output_fd, "  \"%d-%d:%d.%d.%d*%d\": %.*f",
 						entry->obj_name->str[0], entry->obj_name->str[1],
 						entry->obj_name->str[2], entry->obj_name->str[3],
 						entry->obj_name->str[4], entry->obj_name->str[5], prec, value);
 					const char *unit = NULL;
 					if (entry->unit &&  // do not crash on null (unit is optional)
-						(unit = dlms_get_unit((unsigned char) *entry->unit)) != NULL)
-						printf("%s", unit);
-					printf("\n");
-					// flush the stdout puffer, that pipes work without waiting
-					fflush(stdout);
+						(unit = dlms_get_unit((unsigned char) *entry->unit)) != NULL) {
+							fprintf(output_fd, ",\n  \"%d-%d:%d.%d.%d*%d-unit\": \"%s\"",
+								entry->obj_name->str[0], entry->obj_name->str[1],
+								entry->obj_name->str[2], entry->obj_name->str[3],
+								entry->obj_name->str[4], entry->obj_name->str[5], unit);
+						}
 				}
 			}
+			fprintf(output_fd, "\n}\n");
+			// flush the out puffer, that pipes work without waiting
+			fflush(output_fd);
+
 			if (sflag)
 				exit(0); // processed first message - exit
 		}
@@ -158,14 +195,15 @@ int main(int argc, char *argv[]) {
 	// serial device. Adjust as needed.
 	int c;
 
-	while ((c = getopt(argc, argv, "+hsv")) != -1) {
+	while ((c = getopt(argc, argv, "+o:hsv")) != -1) {
 		switch (c) {
 		case 'h':
-			printf("usage: %s [-h] [-s] [-v] device\n", argv[0]);
+			printf("usage: %s [-h] [-s] [-v] [-o output] device\n", argv[0]);
 			printf("device - serial device of connected power meter e.g. /dev/cu.usbserial, or - for stdin\n");
 			printf("-h - help\n");
 			printf("-s - process only one OBIS data stream (single)\n");
 			printf("-v - verbose\n");
+			printf("-o - output file\n");
 			exit(0); // exit here
 			break;
 		case 's':
@@ -173,6 +211,9 @@ int main(int argc, char *argv[]) {
 			break;
 		case 'v':
 			vflag = true;
+			break;
+		case 'o':
+			oflag = optarg;
 			break;
 		case '?':
 			// get a not specified switch, error message is printed by getopt()
@@ -196,9 +237,12 @@ int main(int argc, char *argv[]) {
 		exit(1);
 	}
 
+	output_open();
+
 	// listen on the serial device, this call is blocking.
 	sml_transport_listen(fd, &transport_receiver);
 	close(fd);
+	output_close();
 
 	return 0;
 }
